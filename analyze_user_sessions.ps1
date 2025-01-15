@@ -14,23 +14,18 @@ Write-Host "End  : $($endDate.ToString('yyyy-MM-dd HH:mm:ss'))`n"
 # Initialize events array
 $allEvents = @()
 
-# List of providers to try
+# Try different Teams-related providers
 $providers = @(
-    'Microsoft-Windows-Shell-Core',
-    'Microsoft-Windows-Winlogon',
-    'Microsoft-Windows-Wininit',
-    'Microsoft-Windows-RestartManager',
-    'Windows Error Reporting',
-    'Application Error',
-    'Application Popup',
-    'Windows Explorer'
+    'Microsoft-Windows-Windows Workspace Runtime/Operational',
+    'Microsoft-Teams',
+    'MSTeams'
 )
 
 foreach ($provider in $providers) {
     try {
         Write-Host "Trying provider: $provider"
         $events = Get-WinEvent -FilterHashtable @{
-            LogName = 'Application'
+            LogName = @('Application', 'System', 'Microsoft-Teams/Operational')
             StartTime = $startDate
             EndTime = $endDate
             ProviderName = $provider
@@ -44,8 +39,27 @@ foreach ($provider in $providers) {
     }
 }
 
+# Try Teams process events from Application log
+try {
+    Write-Host "`nLooking for Teams process events..."
+    $teamsProcessEvents = Get-WinEvent -FilterHashtable @{
+        LogName = 'Application'
+        StartTime = $startDate
+        EndTime = $endDate
+    } -ErrorAction Stop | Where-Object { 
+        $_.Message -match "Teams|Microsoft Teams" -or 
+        $_.ProcessName -match "Teams" -or
+        $_.Message -match "meeting|call|chat"
+    }
+    
+    Write-Host "Found $($teamsProcessEvents.Count) Teams-related process events"
+    $allEvents += $teamsProcessEvents
+} catch {
+    Write-Host "Could not get Teams process events: $($_.Exception.Message)"
+}
+
 if ($allEvents.Count -eq 0) {
-    Write-Warning "No events found from any provider"
+    Write-Warning "No Teams events found"
     exit
 }
 
@@ -53,9 +67,9 @@ Write-Host "`nTotal events found: $($allEvents.Count)"
 
 $events = @()
 foreach ($event in $allEvents) {
-    # Look for session start/end indicators in the message
-    $isStart = $event.Message -match "start|logon|login|initialized|launched|began|opened|created"
-    $isEnd = $event.Message -match "end|logoff|logout|terminated|closed|stopped|shutdown|exit"
+    # Look for Teams activity indicators
+    $isStart = $event.Message -match "started|launched|initialized|logged in|signed in|joined meeting|call started"
+    $isEnd = $event.Message -match "ended|closed|terminated|logged out|signed out|left meeting|call ended"
     
     if ($isStart -or $isEnd) {
         $events += [PSCustomObject]@{
@@ -70,7 +84,7 @@ foreach ($event in $allEvents) {
     }
 }
 
-Write-Host "`nFiltered events:"
+Write-Host "`nFiltered Teams events:"
 Write-Host "Start events: $(($events | Where-Object EventType -eq 'Start').Count)"
 Write-Host "End events: $(($events | Where-Object EventType -eq 'End').Count)"
 
@@ -95,13 +109,10 @@ $userSessions = $events | Group-Object { $_.Time.Date.ToString('yyyy-MM-dd') } |
     [PSCustomObject]@{
         Date = $_.Name
         Username = $_.Group[0].Username
-        Domain = $_.Group[0].Domain
-        FirstTime = $firstEvent.Time.ToString('HH:mm:ss')
-        FirstEventId = $firstEvent.EventId
-        FirstProvider = $firstEvent.Provider
-        LastTime = $lastEvent.Time.ToString('HH:mm:ss')
-        LastEventId = $lastEvent.EventId
-        LastProvider = $lastEvent.Provider
+        FirstTime = if ($firstEvent) { $firstEvent.Time.ToString('HH:mm:ss') } else { 'N/A' }
+        FirstEvent = if ($firstEvent) { $firstEvent.Message } else { 'N/A' }
+        LastTime = if ($lastEvent) { $lastEvent.Time.ToString('HH:mm:ss') } else { 'N/A' }
+        LastEvent = if ($lastEvent) { $lastEvent.Message } else { 'N/A' }
         TotalEvents = $dayEvents.Count
         WorkingHours = $workingHours
     }
@@ -109,13 +120,13 @@ $userSessions = $events | Group-Object { $_.Time.Date.ToString('yyyy-MM-dd') } |
 
 # Display results
 if ($userSessions) {
-    Write-Host "`nUser Sessions:"
+    Write-Host "`nTeams Activity Sessions:"
     $userSessions | Sort-Object Date | Format-Table -AutoSize
     
     # Export to CSV
-    $csvPath = "C:\Temp\UserSessions_$(Get-Date -Format 'yyyyMMdd').csv"
+    $csvPath = "C:\Temp\TeamsActivity_$(Get-Date -Format 'yyyyMMdd').csv"
     $userSessions | Export-Csv -Path $csvPath -NoTypeInformation
     Write-Host "Results exported to: $csvPath"
 } else {
-    Write-Warning "No user sessions found in the specified time range."
+    Write-Warning "No Teams activity sessions found in the specified time range."
 } 
