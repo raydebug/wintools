@@ -80,44 +80,14 @@ try {
             Write-Host "Raw message for logon event:"
             $event.Message | Out-String | Write-Host
             
-            # Try different patterns for logon
-            $patterns = @(
-                "Loading user profile\s+(.+)",
-                "Loaded profile for\s+(.+)",
-                "Profile loaded for user\s+(.+)",
-                "User profile loaded:\s+(.+)"
-            )
-            
-            $matched = $false
-            foreach ($pattern in $patterns) {
-                if ($event.Message -match $pattern) {
-                    $username = $matches[1].Trim()
-                    $matched = $true
-                    Write-Host "Matched pattern: $pattern"
-                    Write-Host "Extracted username: $username"
-                    break
-                }
-            }
-            
-            if ($matched) {
-                Write-Host "Found Logon event: $username at $($event.TimeCreated)"
-                if ($username -match "^(.+)\\(.+)$") {
-                    $domain = $matches[1]
-                    $user = $matches[2]
-                } else {
-                    $domain = "LOCAL"
-                    $user = $username
-                }
-
-                $events += [PSCustomObject]@{
-                    Time = $event.TimeCreated
-                    EventType = 'Logon'
-                    Username = $user
-                    Domain = $domain
-                    LogonType = 'Profile'
-                }
-            } else {
-                Write-Host "WARNING: Could not match any pattern for logon event"
+            # Add event directly without pattern matching
+            $events += [PSCustomObject]@{
+                Time = $event.TimeCreated
+                EventType = 'Logon'
+                Username = $event.Properties[1].Value  # Try direct property access
+                Domain = $event.Properties[2].Value    # Try direct property access
+                LogonType = 'Profile'
+                RawMessage = $event.Message            # Keep raw message for debugging
             }
             
         } elseif ($event.Id -eq 4) {
@@ -125,52 +95,26 @@ try {
             Write-Host "Raw message for logoff event:"
             $event.Message | Out-String | Write-Host
             
-            # Try different patterns for logoff
-            $patterns = @(
-                "Unloading user profile\s+(.+)",
-                "Unloaded profile for\s+(.+)",
-                "Profile unloaded for user\s+(.+)",
-                "User profile unloaded:\s+(.+)"
-            )
-            
-            $matched = $false
-            foreach ($pattern in $patterns) {
-                if ($event.Message -match $pattern) {
-                    $username = $matches[1].Trim()
-                    $matched = $true
-                    Write-Host "Matched pattern: $pattern"
-                    Write-Host "Extracted username: $username"
-                    break
-                }
-            }
-            
-            if ($matched) {
-                Write-Host "Found Logoff event: $username at $($event.TimeCreated)"
-                if ($username -match "^(.+)\\(.+)$") {
-                    $domain = $matches[1]
-                    $user = $matches[2]
-                } else {
-                    $domain = "LOCAL"
-                    $user = $username
-                }
-
-                $events += [PSCustomObject]@{
-                    Time = $event.TimeCreated
-                    EventType = 'Logoff'
-                    Username = $user
-                    Domain = $domain
-                    LogonType = 'Profile'
-                }
-            } else {
-                Write-Host "WARNING: Could not match any pattern for logoff event"
+            # Add event directly without pattern matching
+            $events += [PSCustomObject]@{
+                Time = $event.TimeCreated
+                EventType = 'Logoff'
+                Username = $event.Properties[1].Value  # Try direct property access
+                Domain = $event.Properties[2].Value    # Try direct property access
+                LogonType = 'Profile'
+                RawMessage = $event.Message            # Keep raw message for debugging
             }
         }
     }
 
-    Write-Host "`nProcessed events after filtering:"
+    Write-Host "`nProcessed events after collection:"
     Write-Host "Total events: $($events.Count)"
     Write-Host "Logon events: $(($events | Where-Object EventType -eq 'Logon').Count)"
     Write-Host "Logoff events: $(($events | Where-Object EventType -eq 'Logoff').Count)`n"
+
+    # Debug output for first few events
+    Write-Host "`nFirst few events collected:"
+    $events | Select-Object Time, EventType, Username, Domain, RawMessage | Select-Object -First 5 | Format-List
 
 } catch {
     Write-Warning "Error accessing User Profile Service events: $($_.Exception.Message)"
