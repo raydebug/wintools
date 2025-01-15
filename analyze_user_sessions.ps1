@@ -64,9 +64,29 @@ try {
         # Extract username from the event message
         if ($event.Id -eq 1) {
             # Profile loaded event
-            $pattern = "Loading user profile\s+(.+)"
-            if ($event.Message -match $pattern) {
-                $username = $matches[1]
+            Write-Host "Raw message for logon event:"
+            $event.Message | Out-String | Write-Host
+            
+            # Try different patterns for logon
+            $patterns = @(
+                "Loading user profile\s+(.+)",
+                "Loaded profile for\s+(.+)",
+                "Profile loaded for user\s+(.+)",
+                "User profile loaded:\s+(.+)"
+            )
+            
+            $matched = $false
+            foreach ($pattern in $patterns) {
+                if ($event.Message -match $pattern) {
+                    $username = $matches[1].Trim()
+                    $matched = $true
+                    Write-Host "Matched pattern: $pattern"
+                    Write-Host "Extracted username: $username"
+                    break
+                }
+            }
+            
+            if ($matched) {
                 Write-Host "Found Logon event: $username at $($event.TimeCreated)"
                 if ($username -match "^(.+)\\(.+)$") {
                     $domain = $matches[1]
@@ -83,12 +103,35 @@ try {
                     Domain = $domain
                     LogonType = 'Profile'
                 }
+            } else {
+                Write-Host "WARNING: Could not match any pattern for logon event"
             }
+            
         } elseif ($event.Id -eq 4) {
             # Profile unloaded event
-            $pattern = "Unloading user profile\s+(.+)"
-            if ($event.Message -match $pattern) {
-                $username = $matches[1]
+            Write-Host "Raw message for logoff event:"
+            $event.Message | Out-String | Write-Host
+            
+            # Try different patterns for logoff
+            $patterns = @(
+                "Unloading user profile\s+(.+)",
+                "Unloaded profile for\s+(.+)",
+                "Profile unloaded for user\s+(.+)",
+                "User profile unloaded:\s+(.+)"
+            )
+            
+            $matched = $false
+            foreach ($pattern in $patterns) {
+                if ($event.Message -match $pattern) {
+                    $username = $matches[1].Trim()
+                    $matched = $true
+                    Write-Host "Matched pattern: $pattern"
+                    Write-Host "Extracted username: $username"
+                    break
+                }
+            }
+            
+            if ($matched) {
                 Write-Host "Found Logoff event: $username at $($event.TimeCreated)"
                 if ($username -match "^(.+)\\(.+)$") {
                     $domain = $matches[1]
@@ -105,6 +148,8 @@ try {
                     Domain = $domain
                     LogonType = 'Profile'
                 }
+            } else {
+                Write-Host "WARNING: Could not match any pattern for logoff event"
             }
         }
     }
