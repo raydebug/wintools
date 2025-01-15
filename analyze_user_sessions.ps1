@@ -11,20 +11,56 @@ Write-Host "`nSearching for events between:"
 Write-Host "Start: $($startDate.ToString('yyyy-MM-dd HH:mm:ss'))"
 Write-Host "End  : $($endDate.ToString('yyyy-MM-dd HH:mm:ss'))`n"
 
-try {
-    Write-Host "Querying User Profile Service events..."
-    # Get User Profile Service events
-    $events = @()
-    $profileEvents = Get-WinEvent -FilterHashtable @{
-        LogName = 'Microsoft-Windows-User Profile Service/Operational'
-        StartTime = $startDate
-        EndTime = $endDate
-        ID = @(1,4)  # 1: Profile loaded (logon), 4: Profile unloaded (logoff)
-    } -ErrorAction Stop
+# List available logs for debugging
+Write-Host "Available User Profile Service logs:"
+Get-WinEvent -ListLog "*User Profile Service*" | Format-Table -AutoSize
 
+try {
+    Write-Host "`nQuerying User Profile Service events..."
+    # Try different possible log names
+    $logNames = @(
+        'Microsoft-Windows-User Profile Service/Operational',
+        'Microsoft-Windows-User Profile Service',
+        'Microsoft-Windows-UserProfSvc/Operational',
+        'Microsoft-Windows-UserProfSvc'
+    )
+
+    $profileEvents = $null
+    $successLogName = $null
+
+    foreach ($logName in $logNames) {
+        try {
+            Write-Host "Trying log: $logName"
+            $profileEvents = Get-WinEvent -FilterHashtable @{
+                LogName = $logName
+                StartTime = $startDate
+                EndTime = $endDate
+            } -ErrorAction Stop
+            $successLogName = $logName
+            Write-Host "Successfully found log: $logName"
+            break
+        } catch {
+            Write-Host "Failed to get events from $logName : $($_.Exception.Message)"
+            continue
+        }
+    }
+
+    if ($null -eq $profileEvents) {
+        throw "Could not find any valid User Profile Service logs"
+    }
+
+    Write-Host "`nUsing log: $successLogName"
     Write-Host "Found $($profileEvents.Count) total events"
 
+    # Filter for specific event IDs
+    $profileEvents = $profileEvents | Where-Object { $_.Id -in @(1,4) }
+    Write-Host "Found $($profileEvents.Count) events with ID 1 or 4"
+
+    $events = @()
     foreach ($event in $profileEvents) {
+        Write-Host "`nProcessing event ID $($event.Id)"
+        Write-Host "Event message: $($event.Message)"
+        
         # Extract username from the event message
         if ($event.Id -eq 1) {
             # Profile loaded event
