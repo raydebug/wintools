@@ -40,7 +40,7 @@ try {
     Write-Host "Logoff events: $(($events | Where-Object EventType -eq 'Logoff').Count)`n"
 
     # Group events by date
-    $userSessions = $events | Group-Object { $_.Time.Date } | ForEach-Object {
+    $userSessions = $events | Group-Object { $_.Time.Date.ToString('yyyy-MM-dd') } | ForEach-Object {
         $firstLogon = ($_.Group | Where-Object EventType -eq 'Logon' | Sort-Object Time | Select-Object -First 1).Time
         $lastLogoff = ($_.Group | Where-Object EventType -eq 'Logoff' | Sort-Object Time -Descending | Select-Object -First 1).Time
         
@@ -59,8 +59,8 @@ try {
             Date = $_.Name
             Username = $_.Group[0].Username
             Domain = $_.Group[0].Domain
-            FirstLogon = $firstLogon.ToString('HH:mm:ss')
-            LastLogoff = $lastLogoff.ToString('HH:mm:ss')
+            FirstLogon = if ($firstLogon) { $firstLogon.ToString('HH:mm:ss') } else { 'N/A' }
+            LastLogoff = if ($lastLogoff) { $lastLogoff.ToString('HH:mm:ss') } else { 'N/A' }
             WorkingHours = $workingHours
         }
     }
@@ -80,5 +80,6 @@ try {
 
 } catch {
     Write-Warning "Error accessing User Profile Service events: $($_.Exception.Message)"
+    Write-Host "Exception details: $($_.Exception | Format-List | Out-String)"
     exit
 } 
