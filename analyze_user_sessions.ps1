@@ -3,72 +3,69 @@ $osVersion = [System.Environment]::OSVersion.Version
 $isWin11 = $osVersion.Build -ge 22000
 Write-Host "Detected Windows Version: $($osVersion.Major).$($osVersion.Build) ($( if ($isWin11) {'Windows 11'} else {'Windows 10'}))"
 
-# Get events from the last 30 days (modify the timeframe as needed)
+# Get events from the last 30 days
 $startDate = (Get-Date).AddDays(-30)
 $endDate = Get-Date
 
+# Path to your exported .evtx file
+$evtxPath = "C:\Temp\SecurityLog.evtx"
+
+if (-not (Test-Path $evtxPath)) {
+    Write-Error "Please export Security log to $evtxPath first!"
+    Write-Host "Steps to export:"
+    Write-Host "1. Open Event Viewer (eventvwr.msc)"
+    Write-Host "2. Go to Windows Logs -> Security"
+    Write-Host "3. Click 'Save All Events As...' on the right"
+    Write-Host "4. Save as 'SecurityLog.evtx' in C:\Temp"
+    exit
+}
+
 try {
-    # Use wevtutil directly
-    $xmlQuery = @"
-<QueryList>
-  <Query Id="0" Path="Security">
-    <Select Path="Security">
-      *[System[(EventID=4624 or EventID=4634 or EventID=4647) and TimeCreated[@SystemTime&gt;='$($startDate.ToUniversalTime().ToString('o'))' and @SystemTime&lt;='$($endDate.ToUniversalTime().ToString('o'))')]]
-    </Select>
-  </Query>
-</QueryList>
-"@
-    
-    # Save query to temp file
-    $queryPath = Join-Path $env:TEMP "event_query.xml"
-    $xmlQuery | Out-File $queryPath -Encoding UTF8
-    
-    # Execute wevtutil
-    $eventsXml = wevtutil query-events Security /q:$queryPath
-    Remove-Item $queryPath -ErrorAction SilentlyContinue
-    
     $events = @()
-    foreach($eventText in $eventsXml) {
-        try {
-            $eventXml = [xml]$eventText
-            
-            # Get event ID
-            $eventId = [int]$eventXml.Event.System.EventID
-            
-            # Get logon type for logon events
-            if ($eventId -eq 4624) {
-                $logonType = ($eventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'LogonType' }).'#text'
-                if ($logonType -in @('2', '7', '10')) {
+    $eventLog = New-Object System.Diagnostics.Eventing.Reader.EventLogReader($evtxPath)
+    
+    while ($event = $eventLog.ReadEvent()) {
+        # Only process events within our date range
+        if ($event.TimeCreated -ge $startDate -and $event.TimeCreated -le $endDate) {
+            # Process only logon/logoff events
+            if ($event.Id -in @(4624, 4634, 4647)) {
+                $logonType = $null
+                $username = $null
+                $domain = $null
+                
+                foreach ($data in $event.Properties) {
+                    if ($event.Id -eq 4624) {
+                        $logonType = $event.Properties[8].Value
+                        $username = $event.Properties[5].Value
+                        $domain = $event.Properties[6].Value
+                        break
+                    } else {
+                        $logonType = $event.Properties[4].Value
+                        $username = $event.Properties[1].Value
+                        $domain = $event.Properties[2].Value
+                        break
+                    }
+                }
+                
+                # Only process interactive logons
+                if ($logonType -in @(2, 7, 10)) {
                     $events += [PSCustomObject]@{
-                        Time = [DateTime]$eventXml.Event.System.TimeCreated.SystemTime
-                        EventType = 'Logon'
-                        Username = ($eventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'TargetUserName' }).'#text'
-                        Domain = ($eventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'TargetDomainName' }).'#text'
+                        Time = $event.TimeCreated
+                        EventType = if ($event.Id -eq 4624) { 'Logon' } else { 'Logoff' }
+                        Username = $username
+                        Domain = $domain
                         LogonType = $logonType
                     }
                 }
             }
-            # Handle logoff events
-            elseif ($eventId -in @(4634, 4647)) {
-                $events += [PSCustomObject]@{
-                    Time = [DateTime]$eventXml.Event.System.TimeCreated.SystemTime
-                    EventType = 'Logoff'
-                    Username = ($eventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'TargetUserName' }).'#text'
-                    Domain = ($eventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'TargetDomainName' }).'#text'
-                    LogonType = ($eventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'LogonType' }).'#text'
-                }
-            }
-        } catch {
-            Write-Verbose "Skipping malformed event: $_"
-            continue
         }
     }
 } catch {
-    Write-Error "Unable to retrieve events: $($_.Exception.Message)"
+    Write-Error "Error processing events: $($_.Exception.Message)"
     exit
 }
 
-# Filter out system accounts and empty usernames
+# Filter out system accounts
 $events = $events | Where-Object {
     $_.Username -and 
     $_.Username -notmatch '^(SYSTEM|LOCAL SERVICE|NETWORK SERVICE|ANONYMOUS LOGON)$' -and
@@ -82,12 +79,10 @@ $userSessions = $events | Group-Object {
     $firstLogon = ($_.Group | Where-Object EventType -eq 'Logon' | Sort-Object Time | Select-Object -First 1).Time
     $lastLogoff = ($_.Group | Where-Object EventType -eq 'Logoff' | Sort-Object Time -Descending | Select-Object -First 1).Time
     
-    # If no logoff event found, use the last logon time
     if ($null -eq $lastLogoff) {
         $lastLogoff = ($_.Group | Sort-Object Time -Descending | Select-Object -First 1).Time
     }
 
-    # Calculate working hours
     $workingHours = if ($firstLogon -and $lastLogoff) {
         $duration = $lastLogoff - $firstLogon
         [math]::Round($duration.TotalHours, 2)
@@ -106,7 +101,7 @@ $userSessions = $events | Group-Object {
     }
 }
 
-# Display results sorted by date and username
+# Display results
 if ($userSessions) {
     $userSessions | Sort-Object Date, Username | Format-Table -AutoSize
 } else {
