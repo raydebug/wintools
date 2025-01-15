@@ -8,31 +8,8 @@ $startDate = (Get-Date).AddDays(-30)
 $endDate = Get-Date
 
 try {
-    # Try using Get-EventLog first (might work without admin rights)
-    $events = Get-EventLog -LogName Security -After $startDate -Before $endDate |
-        Where-Object { $_.EventID -in @(4624, 4634, 4647) } |
-        ForEach-Object {
-            $eventXml = [xml]$_.ReplacementStrings
-            
-            # Extract logon type
-            $logonType = $_.ReplacementStrings[8]
-            
-            # Only process interactive, remote interactive, and RemoteDesktop logons
-            if ($logonType -in @(2, 7, 10)) {
-                [PSCustomObject]@{
-                    Time = $_.TimeGenerated
-                    EventType = if ($_.EventID -eq 4624) { 'Logon' } else { 'Logoff' }
-                    Username = $_.ReplacementStrings[5]
-                    Domain = $_.ReplacementStrings[6]
-                    LogonType = $logonType
-                }
-            }
-        }
-} catch {
-    Write-Warning "Unable to get events using Get-EventLog. Trying alternative method..."
-    try {
-        # Fallback to using wevtutil (command line tool)
-        $xmlQuery = @"
+    # Use wevtutil directly
+    $xmlQuery = @"
 <QueryList>
   <Query Id="0" Path="Security">
     <Select Path="Security">
@@ -41,29 +18,54 @@ try {
   </Query>
 </QueryList>
 "@
-        
-        $xmlQuery | Out-File ".\temp_query.xml" -Encoding UTF8
-        $eventsXml = wevtutil query-events /logfile:Security /q:.\temp_query.xml
-        Remove-Item ".\temp_query.xml"
-        
-        $events = $eventsXml | ForEach-Object {
-            $eventXml = [xml]$_
-            $logonType = $eventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'LogonType' } | Select-Object -ExpandProperty '#text'
+    
+    # Save query to temp file
+    $queryPath = Join-Path $env:TEMP "event_query.xml"
+    $xmlQuery | Out-File $queryPath -Encoding UTF8
+    
+    # Execute wevtutil
+    $eventsXml = wevtutil query-events Security /q:$queryPath
+    Remove-Item $queryPath -ErrorAction SilentlyContinue
+    
+    $events = @()
+    foreach($eventText in $eventsXml) {
+        try {
+            $eventXml = [xml]$eventText
             
-            if ($logonType -in @(2, 7, 10)) {
-                [PSCustomObject]@{
-                    Time = [DateTime]$eventXml.Event.System.TimeCreated.SystemTime
-                    EventType = if ($eventXml.Event.System.EventID -eq 4624) { 'Logon' } else { 'Logoff' }
-                    Username = ($eventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'TargetUserName' }).#text
-                    Domain = ($eventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'TargetDomainName' }).#text
-                    LogonType = $logonType
+            # Get event ID
+            $eventId = [int]$eventXml.Event.System.EventID
+            
+            # Get logon type for logon events
+            if ($eventId -eq 4624) {
+                $logonType = ($eventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'LogonType' }).'#text'
+                if ($logonType -in @('2', '7', '10')) {
+                    $events += [PSCustomObject]@{
+                        Time = [DateTime]$eventXml.Event.System.TimeCreated.SystemTime
+                        EventType = 'Logon'
+                        Username = ($eventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'TargetUserName' }).'#text'
+                        Domain = ($eventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'TargetDomainName' }).'#text'
+                        LogonType = $logonType
+                    }
                 }
             }
+            # Handle logoff events
+            elseif ($eventId -in @(4634, 4647)) {
+                $events += [PSCustomObject]@{
+                    Time = [DateTime]$eventXml.Event.System.TimeCreated.SystemTime
+                    EventType = 'Logoff'
+                    Username = ($eventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'TargetUserName' }).'#text'
+                    Domain = ($eventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'TargetDomainName' }).'#text'
+                    LogonType = ($eventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'LogonType' }).'#text'
+                }
+            }
+        } catch {
+            Write-Verbose "Skipping malformed event: $_"
+            continue
         }
-    } catch {
-        Write-Error "Unable to retrieve events: $($_.Exception.Message)"
-        exit
     }
+} catch {
+    Write-Error "Unable to retrieve events: $($_.Exception.Message)"
+    exit
 }
 
 # Filter out system accounts and empty usernames
