@@ -52,9 +52,22 @@ try {
     Write-Host "`nUsing log: $successLogName"
     Write-Host "Found $($profileEvents.Count) total events"
 
+    # Count events by ID before filtering
+    $id1Count = ($profileEvents | Where-Object { $_.Id -eq 1 }).Count
+    $id4Count = ($profileEvents | Where-Object { $_.Id -eq 4 }).Count
+    Write-Host "Event ID 1 (Profile Load): $id1Count events"
+    Write-Host "Event ID 4 (Profile Unload): $id4Count events"
+
     # Filter for specific event IDs
     $profileEvents = $profileEvents | Where-Object { $_.Id -in @(1,4) }
     Write-Host "Found $($profileEvents.Count) events with ID 1 or 4"
+
+    # Show sample of each event type
+    Write-Host "`nSample Event ID 1 message:"
+    ($profileEvents | Where-Object { $_.Id -eq 1 } | Select-Object -First 1).Message | Write-Host
+
+    Write-Host "`nSample Event ID 4 message:"
+    ($profileEvents | Where-Object { $_.Id -eq 4 } | Select-Object -First 1).Message | Write-Host
 
     $events = @()
     foreach ($event in $profileEvents) {
