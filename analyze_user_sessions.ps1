@@ -7,61 +7,68 @@ Write-Host "Detected Windows Version: $($osVersion.Major).$($osVersion.Build) ($
 $startDate = (Get-Date).AddDays(-30)
 $endDate = Get-Date
 
-# Path to your exported .evtx file
-$evtxPath = "C:\Temp\SecurityLog.evtx"
-
-if (-not (Test-Path $evtxPath)) {
-    Write-Error "Please export Security log to $evtxPath first!"
-    Write-Host "Steps to export:"
-    Write-Host "1. Open Event Viewer (eventvwr.msc)"
-    Write-Host "2. Go to Windows Logs -> Security"
-    Write-Host "3. Click 'Save All Events As...' on the right"
-    Write-Host "4. Save as 'SecurityLog.evtx' in C:\Temp"
-    exit
-}
-
 try {
+    # Get User Profile Service events
     $events = @()
-    $eventLog = New-Object System.Diagnostics.Eventing.Reader.EventLogReader($evtxPath)
-    
-    while ($event = $eventLog.ReadEvent()) {
-        # Only process events within our date range
-        if ($event.TimeCreated -ge $startDate -and $event.TimeCreated -le $endDate) {
-            # Process only logon/logoff events
-            if ($event.Id -in @(4624, 4634, 4647)) {
-                $logonType = $null
-                $username = $null
-                $domain = $null
-                
-                foreach ($data in $event.Properties) {
-                    if ($event.Id -eq 4624) {
-                        $logonType = $event.Properties[8].Value
-                        $username = $event.Properties[5].Value
-                        $domain = $event.Properties[6].Value
-                        break
-                    } else {
-                        $logonType = $event.Properties[4].Value
-                        $username = $event.Properties[1].Value
-                        $domain = $event.Properties[2].Value
-                        break
-                    }
+    $profileEvents = Get-WinEvent -FilterHashtable @{
+        LogName = 'Microsoft-Windows-User Profile Service/Operational'
+        StartTime = $startDate
+        EndTime = $endDate
+        ID = @(1,4)  # 1: Profile loaded (logon), 4: Profile unloaded (logoff)
+    } -ErrorAction Stop
+
+    foreach ($event in $profileEvents) {
+        # Extract username from the event message
+        if ($event.Id -eq 1) {
+            # Profile loaded event
+            $pattern = "Loading user profile\s+(.+)"
+            if ($event.Message -match $pattern) {
+                $username = $matches[1]
+                if ($username -match "^(.+)\\(.+)$") {
+                    $domain = $matches[1]
+                    $user = $matches[2]
+                } else {
+                    $domain = "LOCAL"
+                    $user = $username
                 }
-                
-                # Only process interactive logons
-                if ($logonType -in @(2, 7, 10)) {
-                    $events += [PSCustomObject]@{
-                        Time = $event.TimeCreated
-                        EventType = if ($event.Id -eq 4624) { 'Logon' } else { 'Logoff' }
-                        Username = $username
-                        Domain = $domain
-                        LogonType = $logonType
-                    }
+
+                $events += [PSCustomObject]@{
+                    Time = $event.TimeCreated
+                    EventType = 'Logon'
+                    Username = $user
+                    Domain = $domain
+                    LogonType = 'Profile'
+                }
+            }
+        } elseif ($event.Id -eq 4) {
+            # Profile unloaded event
+            $pattern = "Unloading user profile\s+(.+)"
+            if ($event.Message -match $pattern) {
+                $username = $matches[1]
+                if ($username -match "^(.+)\\(.+)$") {
+                    $domain = $matches[1]
+                    $user = $matches[2]
+                } else {
+                    $domain = "LOCAL"
+                    $user = $username
+                }
+
+                $events += [PSCustomObject]@{
+                    Time = $event.TimeCreated
+                    EventType = 'Logoff'
+                    Username = $user
+                    Domain = $domain
+                    LogonType = 'Profile'
                 }
             }
         }
     }
 } catch {
-    Write-Error "Error processing events: $($_.Exception.Message)"
+    Write-Warning "Error accessing User Profile Service events: $($_.Exception.Message)"
+    Write-Warning "You might need to enable the User Profile Service Operational log:"
+    Write-Host "1. Open Event Viewer (eventvwr.msc)"
+    Write-Host "2. Go to Applications and Services Logs -> Microsoft -> Windows -> User Profile Service"
+    Write-Host "3. Right-click on Operational and select 'Enable Log'"
     exit
 }
 
@@ -97,7 +104,6 @@ $userSessions = $events | Group-Object {
         FirstLogon = $firstLogon.ToString('HH:mm:ss')
         LastLogoff = $lastLogoff.ToString('HH:mm:ss')
         WorkingHours = $workingHours
-        LogonType = ($_.Group | Where-Object EventType -eq 'Logon' | Select-Object -First 1).LogonType
     }
 }
 
@@ -106,4 +112,11 @@ if ($userSessions) {
     $userSessions | Sort-Object Date, Username | Format-Table -AutoSize
 } else {
     Write-Warning "No user sessions found in the specified time range."
+}
+
+# Export to CSV (optional)
+$csvPath = "C:\Temp\UserSessions_$(Get-Date -Format 'yyyyMMdd').csv"
+if ($userSessions) {
+    $userSessions | Export-Csv -Path $csvPath -NoTypeInformation
+    Write-Host "Results exported to: $csvPath"
 } 
