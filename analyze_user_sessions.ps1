@@ -11,122 +11,103 @@ Write-Host "`nSearching for events between:"
 Write-Host "Start: $($startDate.ToString('yyyy-MM-dd HH:mm:ss'))"
 Write-Host "End  : $($endDate.ToString('yyyy-MM-dd HH:mm:ss'))`n"
 
-# Initialize events array
-$allEvents = @()
-
-# Try different Teams-related providers
-$providers = @(
-    'Microsoft-Windows-Windows Workspace Runtime/Operational',
-    'Microsoft-Teams',
-    'MSTeams'
+# Teams log locations
+$teamsLogPaths = @(
+    "$env:APPDATA\Microsoft\Teams\logs.txt",
+    "$env:APPDATA\Microsoft\Teams\IndexedDB\https_teams.microsoft.com_0.indexeddb.leveldb",
+    "$env:APPDATA\Microsoft\Teams\Cache"
 )
 
-foreach ($provider in $providers) {
-    try {
-        Write-Host "Trying provider: $provider"
-        $events = Get-WinEvent -FilterHashtable @{
-            LogName = @('Application', 'System', 'Microsoft-Teams/Operational')
-            StartTime = $startDate
-            EndTime = $endDate
-            ProviderName = $provider
-        } -ErrorAction Stop
-
-        Write-Host "Found $($events.Count) events for $provider"
-        $allEvents += $events
-    } catch {
-        Write-Host "Could not get events for $provider : $($_.Exception.Message)"
-        continue
-    }
-}
-
-# Try Teams process events from Application log
-try {
-    Write-Host "`nLooking for Teams process events..."
-    $teamsProcessEvents = Get-WinEvent -FilterHashtable @{
-        LogName = 'Application'
-        StartTime = $startDate
-        EndTime = $endDate
-    } -ErrorAction Stop | Where-Object { 
-        $_.Message -match "Teams|Microsoft Teams" -or 
-        $_.ProcessName -match "Teams" -or
-        $_.Message -match "meeting|call|chat"
-    }
-    
-    Write-Host "Found $($teamsProcessEvents.Count) Teams-related process events"
-    $allEvents += $teamsProcessEvents
-} catch {
-    Write-Host "Could not get Teams process events: $($_.Exception.Message)"
-}
-
-if ($allEvents.Count -eq 0) {
-    Write-Warning "No Teams events found"
-    exit
-}
-
-Write-Host "`nTotal events found: $($allEvents.Count)"
-
 $events = @()
-foreach ($event in $allEvents) {
-    # Look for Teams activity indicators
-    $isStart = $event.Message -match "started|launched|initialized|logged in|signed in|joined meeting|call started"
-    $isEnd = $event.Message -match "ended|closed|terminated|logged out|signed out|left meeting|call ended"
-    
-    if ($isStart -or $isEnd) {
+
+try {
+    # Check Teams process for current status
+    $teamsProcess = Get-Process -Name Teams -ErrorAction SilentlyContinue
+    if ($teamsProcess) {
+        Write-Host "Teams is currently running"
         $events += [PSCustomObject]@{
-            Time = $event.TimeCreated
-            EventType = if ($isStart) { 'Start' } else { 'End' }
-            Username = $env:USERNAME
-            Domain = $env:USERDOMAIN
-            EventId = $event.Id
-            Provider = $event.ProviderName
-            Message = $event.Message.Substring(0, [Math]::Min(100, $event.Message.Length))
+            Time = Get-Date
+            EventType = 'Running'
+            Details = "Teams process found (ID: $($teamsProcess.Id))"
         }
     }
-}
 
-Write-Host "`nFiltered Teams events:"
-Write-Host "Start events: $(($events | Where-Object EventType -eq 'Start').Count)"
-Write-Host "End events: $(($events | Where-Object EventType -eq 'End').Count)"
-
-# Group events by date
-$userSessions = $events | Group-Object { $_.Time.Date.ToString('yyyy-MM-dd') } | ForEach-Object {
-    $dayEvents = $_.Group | Sort-Object Time
-    $firstEvent = ($dayEvents | Where-Object EventType -eq 'Start' | Select-Object -First 1)
-    $lastEvent = ($dayEvents | Where-Object EventType -eq 'End' | Select-Object -Last 1)
-
-    # If no end event found, use last event
-    if ($null -eq $lastEvent) {
-        $lastEvent = $dayEvents[-1]
+    # Check Teams log files
+    foreach ($logPath in $teamsLogPaths) {
+        if (Test-Path $logPath) {
+            Write-Host "Checking Teams logs in: $logPath"
+            
+            if ($logPath -like "*logs.txt") {
+                # Read main log file
+                $logContent = Get-Content $logPath -ErrorAction SilentlyContinue
+                foreach ($line in $logContent) {
+                    if ($line -match '(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}).*?(Started|Ended|Signed in|Signed out|Call|Meeting)') {
+                        $timestamp = [DateTime]::ParseExact($matches[1], 'yyyy-MM-ddTHH:mm:ss', $null)
+                        if ($timestamp -ge $startDate -and $timestamp -le $endDate) {
+                            $isStart = $matches[2] -match 'Started|Signed in'
+                            $events += [PSCustomObject]@{
+                                Time = $timestamp
+                                EventType = if ($isStart) { 'Start' } else { 'End' }
+                                Details = $line
+                            }
+                        }
+                    }
+                }
+            }
+            
+            # Check file timestamps as additional data points
+            $fileInfo = Get-Item $logPath
+            if ($fileInfo.LastWriteTime -ge $startDate -and $fileInfo.LastWriteTime -le $endDate) {
+                $events += [PSCustomObject]@{
+                    Time = $fileInfo.LastWriteTime
+                    EventType = 'Activity'
+                    Details = "Log file activity: $($fileInfo.Name)"
+                }
+            }
+        }
     }
-    
-    $workingHours = if ($firstEvent -and $lastEvent) {
-        $duration = $lastEvent.Time - $firstEvent.Time
-        [math]::Round($duration.TotalHours, 2)
+
+    Write-Host "`nFound $($events.Count) Teams activity records"
+
+    # Group events by date
+    $userSessions = $events | Group-Object { $_.Time.Date.ToString('yyyy-MM-dd') } | ForEach-Object {
+        $dayEvents = $_.Group | Sort-Object Time
+        $firstEvent = $dayEvents | Select-Object -First 1
+        $lastEvent = $dayEvents | Select-Object -Last 1
+        
+        $workingHours = if ($firstEvent -and $lastEvent) {
+            $duration = $lastEvent.Time - $firstEvent.Time
+            [math]::Round($duration.TotalHours, 2)
+        } else {
+            0
+        }
+
+        [PSCustomObject]@{
+            Date = $_.Name
+            FirstTime = $firstEvent.Time.ToString('HH:mm:ss')
+            FirstActivity = $firstEvent.Details
+            LastTime = $lastEvent.Time.ToString('HH:mm:ss')
+            LastActivity = $lastEvent.Details
+            TotalEvents = $dayEvents.Count
+            WorkingHours = $workingHours
+        }
+    }
+
+    # Display results
+    if ($userSessions) {
+        Write-Host "`nTeams Activity Sessions:"
+        $userSessions | Sort-Object Date | Format-Table -AutoSize
+        
+        # Export to CSV
+        $csvPath = "C:\Temp\TeamsActivity_$(Get-Date -Format 'yyyyMMdd').csv"
+        $userSessions | Export-Csv -Path $csvPath -NoTypeInformation
+        Write-Host "Results exported to: $csvPath"
     } else {
-        0
+        Write-Warning "No Teams activity found in the specified time range."
     }
 
-    [PSCustomObject]@{
-        Date = $_.Name
-        Username = $_.Group[0].Username
-        FirstTime = if ($firstEvent) { $firstEvent.Time.ToString('HH:mm:ss') } else { 'N/A' }
-        FirstEvent = if ($firstEvent) { $firstEvent.Message } else { 'N/A' }
-        LastTime = if ($lastEvent) { $lastEvent.Time.ToString('HH:mm:ss') } else { 'N/A' }
-        LastEvent = if ($lastEvent) { $lastEvent.Message } else { 'N/A' }
-        TotalEvents = $dayEvents.Count
-        WorkingHours = $workingHours
-    }
-}
-
-# Display results
-if ($userSessions) {
-    Write-Host "`nTeams Activity Sessions:"
-    $userSessions | Sort-Object Date | Format-Table -AutoSize
-    
-    # Export to CSV
-    $csvPath = "C:\Temp\TeamsActivity_$(Get-Date -Format 'yyyyMMdd').csv"
-    $userSessions | Export-Csv -Path $csvPath -NoTypeInformation
-    Write-Host "Results exported to: $csvPath"
-} else {
-    Write-Warning "No Teams activity sessions found in the specified time range."
+} catch {
+    Write-Warning "Error processing Teams logs: $($_.Exception.Message)"
+    Write-Host "Exception details: $($_.Exception | Format-List | Out-String)"
+    exit
 } 
