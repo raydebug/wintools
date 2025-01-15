@@ -7,7 +7,12 @@ Write-Host "Detected Windows Version: $($osVersion.Major).$($osVersion.Build) ($
 $startDate = (Get-Date).AddDays(-30)
 $endDate = Get-Date
 
+Write-Host "`nSearching for events between:"
+Write-Host "Start: $($startDate.ToString('yyyy-MM-dd HH:mm:ss'))"
+Write-Host "End  : $($endDate.ToString('yyyy-MM-dd HH:mm:ss'))`n"
+
 try {
+    Write-Host "Querying User Profile Service events..."
     # Get User Profile Service events
     $events = @()
     $profileEvents = Get-WinEvent -FilterHashtable @{
@@ -17,6 +22,8 @@ try {
         ID = @(1,4)  # 1: Profile loaded (logon), 4: Profile unloaded (logoff)
     } -ErrorAction Stop
 
+    Write-Host "Found $($profileEvents.Count) total events"
+
     foreach ($event in $profileEvents) {
         # Extract username from the event message
         if ($event.Id -eq 1) {
@@ -24,6 +31,7 @@ try {
             $pattern = "Loading user profile\s+(.+)"
             if ($event.Message -match $pattern) {
                 $username = $matches[1]
+                Write-Host "Found Logon event: $username at $($event.TimeCreated)"
                 if ($username -match "^(.+)\\(.+)$") {
                     $domain = $matches[1]
                     $user = $matches[2]
@@ -45,6 +53,7 @@ try {
             $pattern = "Unloading user profile\s+(.+)"
             if ($event.Message -match $pattern) {
                 $username = $matches[1]
+                Write-Host "Found Logoff event: $username at $($event.TimeCreated)"
                 if ($username -match "^(.+)\\(.+)$") {
                     $domain = $matches[1]
                     $user = $matches[2]
@@ -63,6 +72,12 @@ try {
             }
         }
     }
+
+    Write-Host "`nProcessed events after filtering:"
+    Write-Host "Total events: $($events.Count)"
+    Write-Host "Logon events: $(($events | Where-Object EventType -eq 'Logon').Count)"
+    Write-Host "Logoff events: $(($events | Where-Object EventType -eq 'Logoff').Count)`n"
+
 } catch {
     Write-Warning "Error accessing User Profile Service events: $($_.Exception.Message)"
     Write-Warning "You might need to enable the User Profile Service Operational log:"
@@ -78,6 +93,9 @@ $events = $events | Where-Object {
     $_.Username -notmatch '^(SYSTEM|LOCAL SERVICE|NETWORK SERVICE|ANONYMOUS LOGON)$' -and
     $_.Domain -notmatch '^(NT AUTHORITY|Window Manager)$'
 }
+
+Write-Host "After filtering system accounts:"
+Write-Host "Remaining events: $($events.Count)"
 
 # Group events by username and date
 $userSessions = $events | Group-Object { 
@@ -109,6 +127,7 @@ $userSessions = $events | Group-Object {
 
 # Display results
 if ($userSessions) {
+    Write-Host "`nFound user sessions:"
     $userSessions | Sort-Object Date, Username | Format-Table -AutoSize
 } else {
     Write-Warning "No user sessions found in the specified time range."
