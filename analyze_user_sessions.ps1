@@ -12,41 +12,73 @@ Write-Host "Start: $($startDate.ToString('yyyy-MM-dd HH:mm:ss'))"
 Write-Host "End  : $($endDate.ToString('yyyy-MM-dd HH:mm:ss'))`n"
 
 try {
-    Write-Host "Querying System events..."
+    Write-Host "Querying Application events..."
+    
+    # Try to get Windows Shell events (logon/logoff related)
     $logonEvents = Get-WinEvent -FilterHashtable @{
-        LogName = 'System'
+        LogName = 'Application'
         StartTime = $startDate
         EndTime = $endDate
-        ID = @(7001, 7002)  # 7001 = User logon notification, 7002 = User logoff notification
+        ProviderName = @(
+            'Microsoft-Windows-Shell-Core',
+            'Microsoft-Windows-WindowsShell-Core',
+            'Microsoft-Windows-Winlogon',
+            'Microsoft-Windows-Wininit',
+            'Microsoft-Windows-RestartManager'
+        )
     } -ErrorAction Stop
 
     Write-Host "Found $($logonEvents.Count) total events"
-    Write-Host "Logon events (7001): $(($logonEvents | Where-Object Id -eq 7001).Count)"
-    Write-Host "Logoff events (7002): $(($logonEvents | Where-Object Id -eq 7002).Count)"
+    
+    # Show event distribution
+    $eventsByProvider = $logonEvents | Group-Object ProviderName
+    foreach ($provider in $eventsByProvider) {
+        Write-Host "`nProvider: $($provider.Name)"
+        Write-Host "Total Events: $($provider.Count)"
+        
+        # Show sample events for each provider
+        $sampleEvents = $provider.Group | Select-Object -First 3
+        foreach ($sample in $sampleEvents) {
+            Write-Host "Sample Event ID $($sample.Id): $($sample.Message.Substring(0, [Math]::Min(100, $sample.Message.Length)))..."
+        }
+    }
 
     $events = @()
     foreach ($event in $logonEvents) {
-        $events += [PSCustomObject]@{
-            Time = $event.TimeCreated
-            EventType = if ($event.Id -eq 7001) { 'Logon' } else { 'Logoff' }
-            Username = $env:USERNAME  # Current user
-            Domain = $env:USERDOMAIN
+        # Look for session start/end indicators in the message
+        $isStart = $event.Message -match "start|logon|login|initialized|launched|began"
+        $isEnd = $event.Message -match "end|logoff|logout|terminated|closed|stopped"
+        
+        if ($isStart -or $isEnd) {
+            $events += [PSCustomObject]@{
+                Time = $event.TimeCreated
+                EventType = if ($isStart) { 'Start' } else { 'End' }
+                Username = $env:USERNAME
+                Domain = $env:USERDOMAIN
+                EventId = $event.Id
+                Provider = $event.ProviderName
+                Message = $event.Message.Substring(0, [Math]::Min(100, $event.Message.Length))
+            }
         }
     }
+
+    Write-Host "`nFiltered events:"
+    Write-Host "Start events: $(($events | Where-Object EventType -eq 'Start').Count)"
+    Write-Host "End events: $(($events | Where-Object EventType -eq 'End').Count)"
 
     # Group events by date
     $userSessions = $events | Group-Object { $_.Time.Date.ToString('yyyy-MM-dd') } | ForEach-Object {
         $dayEvents = $_.Group | Sort-Object Time
-        $firstLogon = ($dayEvents | Where-Object EventType -eq 'Logon' | Select-Object -First 1).Time
-        $lastLogoff = ($dayEvents | Where-Object EventType -eq 'Logoff' | Select-Object -Last 1).Time
+        $firstEvent = ($dayEvents | Where-Object EventType -eq 'Start' | Select-Object -First 1)
+        $lastEvent = ($dayEvents | Where-Object EventType -eq 'End' | Select-Object -Last 1)
 
-        # If no logoff found, use last event
-        if ($null -eq $lastLogoff) {
-            $lastLogoff = $dayEvents[-1].Time
+        # If no end event found, use last event
+        if ($null -eq $lastEvent) {
+            $lastEvent = $dayEvents[-1]
         }
         
-        $workingHours = if ($firstLogon -and $lastLogoff) {
-            $duration = $lastLogoff - $firstLogon
+        $workingHours = if ($firstEvent -and $lastEvent) {
+            $duration = $lastEvent.Time - $firstEvent.Time
             [math]::Round($duration.TotalHours, 2)
         } else {
             0
@@ -56,8 +88,12 @@ try {
             Date = $_.Name
             Username = $_.Group[0].Username
             Domain = $_.Group[0].Domain
-            FirstLogon = if ($firstLogon) { $firstLogon.ToString('HH:mm:ss') } else { 'N/A' }
-            LastLogoff = if ($lastLogoff) { $lastLogoff.ToString('HH:mm:ss') } else { 'N/A' }
+            FirstTime = $firstEvent.Time.ToString('HH:mm:ss')
+            FirstEventId = $firstEvent.EventId
+            FirstProvider = $firstEvent.Provider
+            LastTime = $lastEvent.Time.ToString('HH:mm:ss')
+            LastEventId = $lastEvent.EventId
+            LastProvider = $lastEvent.Provider
             TotalEvents = $dayEvents.Count
             WorkingHours = $workingHours
         }
@@ -77,27 +113,7 @@ try {
     }
 
 } catch {
-    Write-Warning "Error accessing System events: $($_.Exception.Message)"
-    Write-Host "`nTrying alternative event source..."
-    
-    try {
-        # Try using PowerShell event log as fallback
-        $logonEvents = Get-WinEvent -FilterHashtable @{
-            LogName = 'Windows PowerShell'
-            StartTime = $startDate
-            EndTime = $endDate
-        } | Where-Object { 
-            $_.Message -match "Started|Stopped" -and 
-            $_.Message -match $env:USERNAME 
-        }
-
-        Write-Host "Found $($logonEvents.Count) PowerShell events"
-        # Process events similar to above...
-        # (Add similar processing logic here if needed)
-
-    } catch {
-        Write-Warning "Error accessing PowerShell events: $($_.Exception.Message)"
-        Write-Host "Exception details: $($_.Exception | Format-List | Out-String)"
-        exit
-    }
+    Write-Warning "Error accessing Application events: $($_.Exception.Message)"
+    Write-Host "Exception details: $($_.Exception | Format-List | Out-String)"
+    exit
 } 
