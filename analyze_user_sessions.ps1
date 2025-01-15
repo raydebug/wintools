@@ -17,39 +17,43 @@ try {
         LogName = 'Microsoft-Windows-User Profile Service/Operational'
         StartTime = $startDate
         EndTime = $endDate
-        ID = @(1,4)  # 1: Profile loaded (logon), 4: Profile unloaded (logoff)
     } -ErrorAction Stop
 
     Write-Host "Found $($profileEvents.Count) total events"
-    Write-Host "Event ID 1 (Profile Load): $(($profileEvents | Where-Object { $_.Id -eq 1 }).Count) events"
-    Write-Host "Event ID 4 (Profile Unload): $(($profileEvents | Where-Object { $_.Id -eq 4 }).Count) events"
+    
+    # Show all event IDs found
+    $eventTypes = $profileEvents | Group-Object Id | Sort-Object Name
+    Write-Host "`nEvent Types found:"
+    $eventTypes | ForEach-Object {
+        Write-Host "Event ID $($_.Name): $($_.Count) events"
+        # Show sample message for each event type
+        $sampleEvent = $_.Group | Select-Object -First 1
+        Write-Host "Sample message: $($sampleEvent.Message)`n"
+    }
 
     $events = @()
     foreach ($event in $profileEvents) {
+        # Add all events for analysis
         $events += [PSCustomObject]@{
             Time = $event.TimeCreated
-            EventType = if ($event.Id -eq 1) { 'Logon' } else { 'Logoff' }
-            Username = $event.Properties[1].Value
-            Domain = $event.Properties[2].Value
+            EventId = $event.Id
+            Message = $event.Message
+            Username = if ($event.Properties.Count -gt 1) { $event.Properties[1].Value } else { "N/A" }
+            Domain = if ($event.Properties.Count -gt 2) { $event.Properties[2].Value } else { "N/A" }
         }
     }
 
     Write-Host "`nProcessed events:"
     Write-Host "Total events: $($events.Count)"
-    Write-Host "Logon events: $(($events | Where-Object EventType -eq 'Logon').Count)"
-    Write-Host "Logoff events: $(($events | Where-Object EventType -eq 'Logoff').Count)`n"
 
     # Group events by date
     $userSessions = $events | Group-Object { $_.Time.Date.ToString('yyyy-MM-dd') } | ForEach-Object {
-        $firstLogon = ($_.Group | Where-Object EventType -eq 'Logon' | Sort-Object Time | Select-Object -First 1).Time
-        $lastLogoff = ($_.Group | Where-Object EventType -eq 'Logoff' | Sort-Object Time -Descending | Select-Object -First 1).Time
+        $dayEvents = $_.Group | Sort-Object Time
+        $firstEvent = $dayEvents | Select-Object -First 1
+        $lastEvent = $dayEvents | Select-Object -Last 1
         
-        if ($null -eq $lastLogoff) {
-            $lastLogoff = ($_.Group | Sort-Object Time -Descending | Select-Object -First 1).Time
-        }
-
-        $workingHours = if ($firstLogon -and $lastLogoff) {
-            $duration = $lastLogoff - $firstLogon
+        $workingHours = if ($firstEvent -and $lastEvent) {
+            $duration = $lastEvent.Time - $firstEvent.Time
             [math]::Round($duration.TotalHours, 2)
         } else {
             0
@@ -57,10 +61,13 @@ try {
 
         [PSCustomObject]@{
             Date = $_.Name
-            Username = $_.Group[0].Username
-            Domain = $_.Group[0].Domain
-            FirstLogon = if ($firstLogon) { $firstLogon.ToString('HH:mm:ss') } else { 'N/A' }
-            LastLogoff = if ($lastLogoff) { $lastLogoff.ToString('HH:mm:ss') } else { 'N/A' }
+            Username = $firstEvent.Username
+            Domain = $firstEvent.Domain
+            FirstEventTime = $firstEvent.Time.ToString('HH:mm:ss')
+            FirstEventId = $firstEvent.EventId
+            LastEventTime = $lastEvent.Time.ToString('HH:mm:ss')
+            LastEventId = $lastEvent.EventId
+            TotalEvents = $dayEvents.Count
             WorkingHours = $workingHours
         }
     }
